@@ -1,0 +1,28 @@
+{
+    "name": "stable-mode",
+    "description": "Normal market conditions with BTC around $120,000",
+    "duration": 45000,
+    "updateInterval": {
+        "min": 100,
+        "max": 500
+    },
+    "priceRange": {
+        "base": 120000,
+        "volatility": 0.001,
+        "min": 119800,
+        "max": 120200
+    },
+    "depthLevels": 20,
+    "spreadRange": {
+        "min": 0.5,
+        "max": 2.0
+    },
+    "volumeRange": {
+        "min": 0.1,
+        "max": 5.0
+    },
+    "priceMovement": {
+        "type": "random",
+        "maxChange": 10
+    }
+}

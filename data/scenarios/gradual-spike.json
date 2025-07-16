@@ -1,0 +1,62 @@
+{
+    "name": "gradual-spike",
+    "description": "Gradually increasing frequency to show progressive degradation",
+    "duration": 90000,
+    "phases": [
+        {
+            "name": "stable",
+            "duration": 5000,
+            "updateInterval": {
+                "min": 200,
+                "max": 400
+            },
+            "priceRange": {
+                "base": 120000,
+                "volatility": 0.0005,
+                "min": 119900,
+                "max": 120100
+            }
+        },
+        {
+            "name": "increasing",
+            "duration": 8000,
+            "updateInterval": {
+                "min": 150,
+                "max": 300
+            },
+            "priceRange": {
+                "base": 120000,
+                "volatility": 0.001,
+                "min": 119800,
+                "max": 120200
+            }
+        },
+        {
+            "name": "high-frequency",
+            "duration": 7000,
+            "updateInterval": {
+                "min": 20,
+                "max": 80
+            },
+            "priceRange": {
+                "base": 120000,
+                "volatility": 0.003,
+                "min": 119500,
+                "max": 120500
+            }
+        }
+    ],
+    "depthLevels": 20,
+    "spreadRange": {
+        "min": 0.3,
+        "max": 1.5
+    },
+    "volumeRange": {
+        "min": 0.2,
+        "max": 8.0
+    },
+    "priceMovement": {
+        "type": "progressive",
+        "maxChange": 30
+    }
+}
