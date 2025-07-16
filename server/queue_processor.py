@@ -117,7 +117,7 @@ class MessageQueueProcessor:
                 
                 processing_time = (time.time() - processing_start) * 1000  # Convert to ms
                 
-                # Process the orderbook (simulate some work)
+                # Process the orderbook
                 await self._process_orderbook(orderbook, processing_time)
                 
                 # Track actual processing time for UI display
@@ -138,11 +138,12 @@ class MessageQueueProcessor:
                     estimated_delay = self._get_processing_delay()
                     logger.warning(f"Queue backlog growing: {queue_size} messages, Memory: {memory_mb:.1f}MB, Processing delay: {estimated_delay}ms")
                     
-                # Log individual slow processing
-                if processing_time > 100:  # Log if processing > 100ms
-                    logger.error(f"Processing backlog detected: {processing_time:.1f}ms per message (queue: {queue_size})")
-                elif processing_time > 50:  # Warn if > 50ms
-                    logger.warning(f"Processing delay exceeded normal range: {processing_time:.1f}ms")
+                expected_delay = PerformanceConfig.get_processing_delays().get(self.current_scenario, 50)
+                
+                if processing_time > expected_delay * 2:
+                    logger.error(f"CRITICAL: Processing severely degraded: {processing_time:.1f}ms (expected: {expected_delay}ms, scenario: {self.current_scenario})")
+                elif processing_time > expected_delay * 1.5:
+                    logger.warning(f"Processing delay elevated: {processing_time:.1f}ms (expected: {expected_delay}ms, scenario: {self.current_scenario})")
                     
             except asyncio.CancelledError:
                 break
@@ -167,14 +168,17 @@ class MessageQueueProcessor:
             processed_data['queue_position'] = self.queue.qsize()
             processed_data['is_stale'] = is_stale
             
-            # Enhanced logging with staleness info
-            if is_stale:
-                system_logger.warning(f"Stale data detected: orderbook {orderbook.sequence_id} aged {orderbook.data_age_ms:.1f}ms (threshold: {staleness_threshold}ms)")
+            if is_stale and orderbook.data_age_ms > 1000:
+                system_logger.error(f"CRITICAL: Data critically stale: orderbook {orderbook.sequence_id} aged {orderbook.data_age_ms:.1f}ms (threshold: {staleness_threshold}ms)")
+            elif is_stale:
+                system_logger.warning(f"Data staleness detected: orderbook {orderbook.sequence_id} aged {orderbook.data_age_ms:.1f}ms (threshold: {staleness_threshold}ms)")
             
-            # Log processing with performance metrics
-            if processing_time_ms > 50:  # Log slow processing
-                system_logger.warning(f"Slow processing detected: orderbook {orderbook.sequence_id} took {processing_time_ms:.2f}ms")
-            else:
+            expected_delay = PerformanceConfig.get_processing_delays().get(self.current_scenario, 50)
+            if processing_time_ms > expected_delay * 2:
+                system_logger.error(f"CRITICAL: Processing severely degraded: orderbook {orderbook.sequence_id} took {processing_time_ms:.2f}ms (expected: {expected_delay}ms)")
+            elif processing_time_ms > expected_delay * 1.5:
+                system_logger.warning(f"Processing delay elevated: orderbook {orderbook.sequence_id} took {processing_time_ms:.2f}ms (expected: {expected_delay}ms)")
+            elif orderbook.data_age_ms and orderbook.data_age_ms > 100:
                 system_logger.info(f"Processed orderbook {orderbook.sequence_id} in {processing_time_ms:.2f}ms (data age: {orderbook.data_age_ms:.1f}ms)")
             
             # Log orderbook data to separate file
@@ -260,17 +264,23 @@ class MessageQueueProcessor:
             "uptime_seconds": time.time() - self.start_time
         }
         
-        logger.warning(f"High memory usage detected - processing backlog: {incident_type}", extra=incident_data)
+        context_info = {
+            "scenario": self.current_scenario,
+            "expected_performance": PerformanceConfig.get_processing_delays().get(self.current_scenario, 50),
+            "queue_utilization": (details.get("queue_size", 0) / ServerConfig.MAX_QUEUE_SIZE) * 100,
+            "memory_utilization": (details.get("memory_usage_mb", 0) / self.memory_threshold_mb) * 100,
+            "processing_rate": self.total_messages_processed / (time.time() - self.start_time) if time.time() > self.start_time else 0
+        }
         
-        # Call incident callback if registered
+        logger.error(f"INCIDENT TRIGGERED: {incident_type} in {self.current_scenario} mode", extra={
+            **incident_data,
+            **context_info
+        })
+        
         if self.on_incident_alert:
             await self.on_incident_alert(incident_data)
         
-        # Log incident but don't shutdown for demo purposes
-        logger.info(f"Incident logged: {incident_type} - Server continues running for demonstration")
-        # Graceful shutdown disabled for demo
-        # await asyncio.sleep(ServerConfig.GRACEFUL_SHUTDOWN_DELAY)
-        # await self.stop()
+        logger.info(f"Incident {incident_type} logged with context: Queue {context_info['queue_utilization']:.1f}% full, Memory {context_info['memory_utilization']:.1f}% used, Processing rate {context_info['processing_rate']:.1f} msg/sec")
     
     async def _create_heartbeat(self) -> HeartbeatMessage:
         """Create a heartbeat message with current server status"""
@@ -322,19 +332,23 @@ class MessageQueueProcessor:
         # Calculate queue backlog severity
         queue_utilization = (queue_size / ServerConfig.MAX_QUEUE_SIZE) * 100
         
-        # Log different levels based on system health
-        if memory_usage > 400:  # Critical memory
-            logger.error(f"Critical memory usage: {memory_usage:.1f}MB (threshold: {self.memory_threshold_mb}MB), Queue: {queue_size}, Processing: {processing_delay}ms")
-        elif memory_usage > 250:  # High memory
-            logger.warning(f"High memory usage: {memory_usage:.1f}MB, Queue backlog: {queue_size} messages ({queue_utilization:.1f}% capacity)")
-        elif queue_size > 50:  # Queue building up
-            logger.warning(f"Queue size increasing: {queue_size} messages, Processing rate: {processing_rate:.1f} msg/sec")
-        else:  # Normal operation
-            logger.info(f"Processing metrics - Rate: {processing_rate:.1f} msg/sec, Memory: {memory_usage:.1f}MB, Queue: {queue_size}")
+        if memory_usage > self.memory_threshold_mb * 0.9:
+            logger.error(f"CRITICAL: Memory usage approaching limit: {memory_usage:.1f}MB (threshold: {self.memory_threshold_mb}MB), Queue: {queue_size}, Processing: {processing_delay}ms")
+        elif memory_usage > self.memory_threshold_mb * 0.7:
+            logger.warning(f"High memory usage: {memory_usage:.1f}MB (threshold: {self.memory_threshold_mb}MB), Queue backlog: {queue_size} messages ({queue_utilization:.1f}% capacity)")
+        elif queue_size > ServerConfig.MAX_QUEUE_SIZE * 0.5:
+            logger.warning(f"Queue backlog building: {queue_size} messages ({queue_utilization:.1f}% capacity), Processing rate: {processing_rate:.1f} msg/sec")
+        elif queue_size > ServerConfig.MAX_QUEUE_SIZE * 0.1:
+            logger.info(f"Queue utilization: {queue_size} messages ({queue_utilization:.1f}% capacity), Processing rate: {processing_rate:.1f} msg/sec")
+        else:
+            if self.total_messages_processed % 100 == 0:
+                logger.info(f"System healthy - Rate: {processing_rate:.1f} msg/sec, Memory: {memory_usage:.1f}MB, Queue: {queue_size}")
         
-        # Additional forensic breadcrumbs
-        if processing_delay > 100:
-            logger.warning(f"Excessive processing delay detected: {processing_delay}ms (normal: <20ms)")
+        expected_delay = PerformanceConfig.get_processing_delays().get(self.current_scenario, 50)
+        if processing_delay > expected_delay * 2:
+            logger.error(f"CRITICAL: Processing delay severely degraded: {processing_delay}ms (expected: {expected_delay}ms for {self.current_scenario})")
+        elif processing_delay > expected_delay * 1.5:
+            logger.warning(f"Processing delay elevated: {processing_delay}ms (expected: {expected_delay}ms for {self.current_scenario})")
         
         metrics = {
             "uptime_seconds": uptime,
@@ -390,9 +404,8 @@ class MessageQueueProcessor:
                 'mid_price': orderbook.mid_price
             })
             
-            # Ensure we have sufficient validation history (increased memory usage)
-            if len(self.sequence_validation_cache) > 50:  # Reduced from 100 to trigger memory issues faster
-                # Sort validation cache to check for gaps (inefficient bubble sort)
+            if len(self.sequence_validation_cache) > 50:
+                # Sort validation cache to check for gaps
                 cache_size = len(self.sequence_validation_cache)
                 for i in range(cache_size):
                     for j in range(0, cache_size - i - 1):
@@ -439,22 +452,20 @@ class MessageQueueProcessor:
             # Add to audit trail
             self.audit_trail.append(audit_record)
             
-            # Compliance requires keeping audit trail sorted by timestamp
-            # (inefficient sort on every update)
             if len(self.audit_trail) > 50:
-                # Sort by timestamp string (inefficient string comparison)
+                # Sort by timestamp string
                 for i in range(len(self.audit_trail)):
                     for j in range(i + 1, len(self.audit_trail)):
                         if self.audit_trail[i]['timestamp'] > self.audit_trail[j]['timestamp']:
                             self.audit_trail[i], self.audit_trail[j] = \
                                 self.audit_trail[j], self.audit_trail[i]
             
-            # Generate compliance report string (inefficient concatenation)
+            # Generate compliance report string
             compliance_report = "AUDIT_TRAIL:"
             for record in self.audit_trail:
                 compliance_report += f"SEQ:{record['sequence_id']},TIME:{record['timestamp']},"
             
-            # Validate compliance format (recompile regex each time)
+            # Validate compliance format
             import re
             compliance_pattern = re.compile(r'SEQ:\d+,TIME:[\d\-T:\.]+')
             if compliance_pattern.search(compliance_report):

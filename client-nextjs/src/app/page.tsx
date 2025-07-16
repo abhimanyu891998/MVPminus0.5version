@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Wifi, WifiOff, Activity, AlertTriangle, Settings, TrendingUp, Users, Database, Zap, Clock, MemoryStick } from 'lucide-react'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { useDashboardState } from '@/hooks/useDashboardState'
@@ -10,10 +10,33 @@ export default function TradingDashboard() {
   const { isConnected, error } = useWebSocket(dashboardState)
   const { state } = dashboardState
   const [incidentCount, setIncidentCount] = useState(0)
+  const alertsScrollRef = useRef<HTMLDivElement>(null)
+  const [lastSequenceId, setLastSequenceId] = useState(0)
+  const [isUpdating, setIsUpdating] = useState(false)
 
   useEffect(() => {
     setIncidentCount(state.incidents.length)
+    
+    // Auto-scroll to the top when new incidents are added
+    if (alertsScrollRef.current && state.incidents.length > 0) {
+      alertsScrollRef.current.scrollTop = 0
+    }
   }, [state.incidents])
+
+  // Track orderbook updates for animations
+  useEffect(() => {
+    if (state.orderbook_data.sequence_id !== lastSequenceId && state.orderbook_data.sequence_id > 0) {
+      setIsUpdating(true)
+      setLastSequenceId(state.orderbook_data.sequence_id)
+      
+      // Reset animation after a short delay
+      const timer = setTimeout(() => {
+        setIsUpdating(false)
+      }, 300)
+      
+      return () => clearTimeout(timer)
+    }
+  }, [state.orderbook_data.sequence_id, lastSequenceId])
 
   const formatPrice = (price: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -112,8 +135,12 @@ export default function TradingDashboard() {
             <div className="flex items-center space-x-2">
               {isConnected ? (
                 <div className="flex items-center space-x-1">
-                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                  <span className="text-sm text-green-600 font-medium">LIVE</span>
+                  <div className={`w-2 h-2 bg-green-500 rounded-full transition-all duration-200 ${
+                    isUpdating ? 'animate-ping' : 'animate-pulse'
+                  }`}></div>
+                  <span className={`text-sm text-green-600 font-medium transition-all duration-200 ${
+                    isUpdating ? 'text-green-700' : ''
+                  }`}>LIVE</span>
                 </div>
               ) : (
                 <div className="flex items-center space-x-1">
@@ -129,16 +156,16 @@ export default function TradingDashboard() {
               <div className="flex items-center space-x-2">
                 <select
                   onChange={(e) => handleProfileSwitch(e.target.value)}
-                  value={state.metrics.current_scenario}
-                  className="text-sm font-medium border-2 border-gray-300 rounded-lg px-3 py-2 bg-white shadow-sm hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer min-w-[140px]"
+                  value={state.metrics.current_scenario || "stable-mode"}
+                  className="text-sm font-medium text-gray-900 border-2 border-gray-300 rounded-lg px-3 py-2 bg-white shadow-sm hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer min-w-[140px]"
                 >
-                  <option value="stable-mode" className="py-2 text-green-700">🟢 Stable Mode</option>
-                  <option value="burst-mode" className="py-2 text-yellow-700">🟡 Burst Mode</option>
-                  <option value="gradual-spike" className="py-2 text-orange-700">🟠 Gradual Spike</option>
-                  <option value="extreme-spike" className="py-2 text-red-700">🔴 Extreme Spike</option>
+                  <option value="stable-mode" className="py-2 text-gray-900 bg-white">🟢 Stable Mode</option>
+                  <option value="burst-mode" className="py-2 text-gray-900 bg-white">🟡 Burst Mode</option>
+                  <option value="gradual-spike" className="py-2 text-gray-900 bg-white">🟠 Gradual Spike</option>
+                  <option value="extreme-spike" className="py-2 text-gray-900 bg-white">🔴 Extreme Spike</option>
                 </select>
-                <div className={`px-2 py-1 rounded-md text-xs font-medium ${getModeDisplayInfo(state.metrics.current_scenario).color}`}>
-                  {getModeDisplayInfo(state.metrics.current_scenario).description}
+                <div className={`px-2 py-1 rounded-md text-xs font-medium ${getModeDisplayInfo(state.metrics.current_scenario || "stable-mode").color}`}>
+                  {getModeDisplayInfo(state.metrics.current_scenario || "stable-mode").description}
                 </div>
               </div>
             </div>
@@ -152,20 +179,29 @@ export default function TradingDashboard() {
         <div className="flex-1 p-6">
           <div className="bg-white border border-gray-200 rounded-lg h-full">
             {/* Orderbook Header */}
-            <div className="border-b border-gray-100 p-4">
+            <div className={`border-b border-gray-100 p-4 transition-all duration-300 ${isUpdating ? 'bg-blue-50 border-blue-200' : 'bg-white'}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-4">
                   <h2 className="text-lg font-semibold text-gray-900">Order Book</h2>
-                  <div className={`px-2 py-1 rounded text-xs font-medium ${getDataFreshnessColor(state.orderbook_data.data_age_ms, state.orderbook_data.is_stale)}`}>
+                  <div className={`px-2 py-1 rounded text-xs font-medium transition-all duration-200 ${getDataFreshnessColor(state.orderbook_data.data_age_ms, state.orderbook_data.is_stale)} ${isUpdating ? 'scale-105' : 'scale-100'}`}>
                     {getDataFreshnessText(state.orderbook_data.data_age_ms, state.orderbook_data.is_stale)}
                   </div>
                 </div>
                 <div className="flex items-center space-x-6 text-sm text-gray-500">
-                  <div>Mid: {formatPrice(state.orderbook_data.mid_price)}</div>
-                  <div>Spread: {formatPrice(state.orderbook_data.spread)}</div>
-                  <div>Seq: {state.orderbook_data.sequence_id}</div>
+                  <div className={`transition-all duration-200 ${isUpdating ? 'text-blue-600 font-medium' : ''}`}>
+                    Mid: {formatPrice(state.orderbook_data.mid_price)}
+                  </div>
+                  <div className={`transition-all duration-200 ${isUpdating ? 'text-blue-600 font-medium' : ''}`}>
+                    Spread: {formatPrice(state.orderbook_data.spread)}
+                  </div>
+                  <div className={`transition-all duration-200 ${isUpdating ? 'text-blue-600 font-medium' : ''}`}>
+                    Seq: {state.orderbook_data.sequence_id}
+                  </div>
                   {state.orderbook_data.data_age_ms && (
-                    <div className={`font-medium ${state.orderbook_data.data_age_ms > 1000 ? 'text-red-600' : state.orderbook_data.data_age_ms > 500 ? 'text-yellow-600' : 'text-green-600'}`}>
+                    <div className={`font-medium transition-all duration-200 ${
+                      state.orderbook_data.data_age_ms > 1000 ? 'text-red-600' : 
+                      state.orderbook_data.data_age_ms > 500 ? 'text-yellow-600' : 'text-green-600'
+                    } ${isUpdating ? 'scale-105' : 'scale-100'}`}>
                       Age: {state.orderbook_data.data_age_ms.toFixed(0)}ms
                     </div>
                   )}
@@ -192,7 +228,7 @@ export default function TradingDashboard() {
             )}
 
             {/* Orderbook Content */}
-            <div className="flex-1 p-4">
+            <div className={`flex-1 p-4 transition-all duration-200 ${isUpdating ? 'bg-gray-50/50' : ''}`}>
               <div className="grid grid-cols-2 gap-6 h-full">
                 {/* Asks (Sell Orders) */}
                 <div className="space-y-1">
@@ -202,9 +238,22 @@ export default function TradingDashboard() {
                   </div>
                   <div className="space-y-1 max-h-96 overflow-y-auto">
                     {state.orderbook_data.asks.slice(0, 15).reverse().map((ask, index) => (
-                      <div key={index} className="flex justify-between text-sm py-1 px-2 hover:bg-red-50 rounded">
-                        <span className="text-red-600 font-mono font-medium">{formatPrice(parseFloat(ask[0]))}</span>
-                        <span className="text-gray-600 font-mono">{formatQuantity(ask[1])}</span>
+                      <div 
+                        key={index} 
+                        className={`flex justify-between text-sm py-1 px-2 hover:bg-red-50 rounded transition-all duration-200 ${
+                          isUpdating ? 'bg-red-50 border-l-2 border-red-300 shadow-sm' : ''
+                        }`}
+                      >
+                        <span className={`text-red-600 font-mono font-medium transition-all duration-200 ${
+                          isUpdating ? 'text-red-700' : ''
+                        }`}>
+                          {formatPrice(parseFloat(ask[0]))}
+                        </span>
+                        <span className={`text-gray-600 font-mono transition-all duration-200 ${
+                          isUpdating ? 'text-gray-700' : ''
+                        }`}>
+                          {formatQuantity(ask[1])}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -218,9 +267,22 @@ export default function TradingDashboard() {
                   </div>
                   <div className="space-y-1 max-h-96 overflow-y-auto">
                     {state.orderbook_data.bids.slice(0, 15).map((bid, index) => (
-                      <div key={index} className="flex justify-between text-sm py-1 px-2 hover:bg-green-50 rounded">
-                        <span className="text-green-600 font-mono font-medium">{formatPrice(parseFloat(bid[0]))}</span>
-                        <span className="text-gray-600 font-mono">{formatQuantity(bid[1])}</span>
+                      <div 
+                        key={index} 
+                        className={`flex justify-between text-sm py-1 px-2 hover:bg-green-50 rounded transition-all duration-200 ${
+                          isUpdating ? 'bg-green-50 border-l-2 border-green-300 shadow-sm' : ''
+                        }`}
+                      >
+                        <span className={`text-green-600 font-mono font-medium transition-all duration-200 ${
+                          isUpdating ? 'text-green-700' : ''
+                        }`}>
+                          {formatPrice(parseFloat(bid[0]))}
+                        </span>
+                        <span className={`text-gray-600 font-mono transition-all duration-200 ${
+                          isUpdating ? 'text-gray-700' : ''
+                        }`}>
+                          {formatQuantity(bid[1])}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -241,8 +303,8 @@ export default function TradingDashboard() {
         </div>
 
         {/* System Metrics Sidebar */}
-        <div className="w-80 p-6 border-l border-gray-200">
-          <div className="space-y-6">
+        <div className="w-80 p-6 border-l border-gray-200 flex-shrink-0">
+          <div className="space-y-6 h-full">
             {/* System Health */}
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <h3 className="text-sm font-medium text-gray-900 mb-3">System Health</h3>
@@ -303,11 +365,14 @@ export default function TradingDashboard() {
 
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-2">
-                    <Activity className="w-4 h-4 text-gray-500" />
+                    <Activity className={`w-4 h-4 text-gray-500 transition-all duration-200 ${isUpdating ? 'text-blue-500 animate-pulse' : ''}`} />
                     <span className="text-sm text-gray-600">Data Age</span>
                   </div>
                   <div className="text-right">
-                    <div className={`text-sm font-medium ${state.orderbook_data.data_age_ms > 1000 ? 'text-red-600' : state.orderbook_data.data_age_ms > 500 ? 'text-yellow-600' : 'text-green-600'}`}>
+                    <div className={`text-sm font-medium transition-all duration-200 ${
+                      state.orderbook_data.data_age_ms > 1000 ? 'text-red-600' : 
+                      state.orderbook_data.data_age_ms > 500 ? 'text-yellow-600' : 'text-green-600'
+                    } ${isUpdating ? 'scale-105' : 'scale-100'}`}>
                       {state.orderbook_data.data_age_ms ? state.orderbook_data.data_age_ms.toFixed(0) + 'ms' : '0ms'}
                     </div>
                     <div className="text-xs text-gray-500">staleness</div>
@@ -317,7 +382,7 @@ export default function TradingDashboard() {
             </div>
 
             {/* Incidents */}
-            <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <div className="bg-white border border-gray-200 rounded-lg p-4 h-80">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-900">System Alerts</h3>
                 {incidentCount > 0 && (
@@ -327,27 +392,36 @@ export default function TradingDashboard() {
                 )}
               </div>
 
-              <div className="space-y-2 max-h-64 overflow-y-auto">
+              <div ref={alertsScrollRef} className="h-64 overflow-y-auto overflow-x-hidden scroll-smooth">
                 {state.incidents.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500">
-                    <div className="text-sm">No incidents detected</div>
-                    <div className="text-xs text-gray-400">System running normally</div>
+                  <div className="flex items-center justify-center h-full text-gray-500">
+                    <div className="text-center">
+                      <div className="text-sm">No incidents detected</div>
+                      <div className="text-xs text-gray-400">System running normally</div>
+                    </div>
                   </div>
                 ) : (
-                  state.incidents.slice(-5).reverse().map((incident, index) => (
-                    <div key={index} className="border border-red-200 rounded-lg p-3 bg-red-50">
-                      <div className="flex items-start space-x-2">
-                        <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
-                        <div className="flex-1">
-                          <div className="text-sm font-medium text-red-900">{incident.type}</div>
-                          <div className="text-xs text-red-700 mt-1">{incident.details}</div>
-                          <div className="text-xs text-red-600 mt-1">
-                            {new Date(incident.timestamp).toLocaleTimeString()}
+                  <div className="space-y-2 pr-2">
+                    {state.incidents.slice(-10).reverse().map((incident, index) => (
+                      <div 
+                        key={`${incident.timestamp}-${index}`} 
+                        className={`border border-red-200 rounded-lg p-3 bg-red-50 flex-shrink-0 transition-all duration-300 ${
+                          index === 0 ? 'animate-pulse' : ''
+                        }`}
+                      >
+                        <div className="flex items-start space-x-2">
+                          <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-red-900 truncate">{incident.type}</div>
+                            <div className="text-xs text-red-700 mt-1 break-words">{incident.details}</div>
+                            <div className="text-xs text-red-600 mt-1">
+                              {new Date(incident.timestamp).toLocaleTimeString()}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ))
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
@@ -366,10 +440,10 @@ export default function TradingDashboard() {
                   <span className="text-sm text-gray-600">Profile</span>
                   <div className="flex items-center space-x-2">
                     <span className="text-sm">
-                      {getModeDisplayInfo(state.metrics.current_scenario).emoji}
+                      {getModeDisplayInfo(state.metrics.current_scenario || "stable-mode").emoji}
                     </span>
                     <span className="text-sm font-medium text-gray-900">
-                      {getModeDisplayInfo(state.metrics.current_scenario).name}
+                      {getModeDisplayInfo(state.metrics.current_scenario || "stable-mode").name}
                     </span>
                   </div>
                 </div>
