@@ -19,14 +19,14 @@ class ServerConfig:
     
     # Data processing settings
     MAX_QUEUE_SIZE = 10000
-    PROCESSING_DELAY_MS = 50  # Intentional delay for incident simulation
+    PROCESSING_DELAY_MS = 50  # Processing delay for message batching
     TOP_LEVELS = 15  # Number of orderbook levels to publish
     
-    # Incident simulation settings
+    # Performance settings
     INITIAL_SCENARIO = "stable-mode"
-    SCENARIO_SWITCH_TIME = 10  # seconds before switching to burst mode
-    MEMORY_THRESHOLD_MB = 150  # Memory threshold for crash simulation (lowered for testing)
-    GRACEFUL_SHUTDOWN_DELAY = 30  # seconds warning before shutdown
+    PROFILE_SWITCH_TIME = 10  # seconds before switching performance profiles
+    MEMORY_THRESHOLD_MB = 150  # Memory threshold for performance monitoring (adjusted for demo)
+    GRACEFUL_SHUTDOWN_DELAY = 10  # seconds warning before shutdown (reduced for demo)
     
     # Heartbeat settings
     HEARTBEAT_INTERVAL = 1  # seconds
@@ -49,12 +49,12 @@ class ServerConfig:
     TRADING_PAIR = "BTCUSDT"
     BASE_PRICE = 120000.0
 
-class IncidentSimulationConfig:
-    """Configuration for incident simulation scenarios"""
+class PerformanceConfig:
+    """Configuration for performance profile scenarios"""
     
     @staticmethod
     def get_scenario_sequence() -> list:
-        """Get the sequence of scenarios for incident simulation"""
+        """Get the sequence of performance profiles"""
         return [
             {
                 "name": "stable-mode",
@@ -72,8 +72,8 @@ class IncidentSimulationConfig:
     def get_processing_delays() -> Dict[str, int]:
         """Get processing delays for different scenarios (in milliseconds)"""
         return {
-            "stable-mode": 10,    # Normal processing
-            "burst-mode": 100,    # Intentional delay for incident simulation
-            "gradual-spike": 50,  # Moderate delay
-            "extreme-spike": 200  # Maximum delay
+            "stable-mode": 50,    # Normal processing (increased from 10ms)
+            "burst-mode": 300,    # Increased processing delay under load (increased from 100ms)
+            "gradual-spike": 150,  # Moderate delay (increased from 50ms)
+            "extreme-spike": 500  # Maximum delay (increased from 200ms)
         } 

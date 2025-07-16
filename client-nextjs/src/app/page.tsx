@@ -1,222 +1,389 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Wifi, WifiOff, Activity, AlertTriangle, Clock, Users, Database, Zap } from 'lucide-react'
-import OrderbookView from '@/components/OrderbookView'
-import MetricsPanel from '@/components/MetricsPanel'
-import LogsPanel from '@/components/LogsPanel'
-import ScenarioControls from '@/components/ScenarioControls'
-import PerformanceChart from '@/components/PerformanceChart'
+import { Wifi, WifiOff, Activity, AlertTriangle, Settings, TrendingUp, Users, Database, Zap, Clock, MemoryStick } from 'lucide-react'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { useDashboardState } from '@/hooks/useDashboardState'
 
-export default function Dashboard() {
-  const { isConnected, error } = useWebSocket()
-  const { state, updateOrderbook, updateMetrics } = useDashboardState()
+export default function TradingDashboard() {
+  const dashboardState = useDashboardState()
+  const { isConnected, error } = useWebSocket(dashboardState)
+  const { state } = dashboardState
+  const [incidentCount, setIncidentCount] = useState(0)
 
-  // Test state updates
-  const testUpdate = () => {
-    console.log('Testing state update...')
-    const testMidPrice = 50000 + Math.floor(Date.now() % 1000)
-    const testSpread = 1 + (Date.now() % 10)
+  useEffect(() => {
+    setIncidentCount(state.incidents.length)
+  }, [state.incidents])
 
-    // Generate test orderbook data
-    const testBids: [string, string][] = []
-    const testAsks: [string, string][] = []
+  const formatPrice = (price: number) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(price)
+  }
 
-    for (let i = 0; i < 10; i++) {
-      const bidPrice = testMidPrice - (i * 0.5) - (i * 0.01)
-      const askPrice = testMidPrice + (i * 0.5) + (i * 0.01)
-      const quantity = (5 + i * 0.3).toFixed(4)
+  const formatQuantity = (quantity: string) => {
+    return parseFloat(quantity).toFixed(4)
+  }
 
-      testBids.push([bidPrice.toFixed(2), quantity])
-      testAsks.push([askPrice.toFixed(2), quantity])
+  const getDataFreshnessColor = (dataAge: number = 0, isStale: boolean = false) => {
+    if (isStale && dataAge > 1000) return 'text-red-600 bg-red-50'
+    if (isStale) return 'text-yellow-600 bg-yellow-50'
+    return 'text-green-600 bg-green-50'
+  }
+
+  const getDataFreshnessText = (dataAge: number = 0, isStale: boolean = false) => {
+    if (isStale && dataAge > 1000) return 'STALE'
+    if (isStale) return 'SLOW'
+    return 'LIVE'
+  }
+
+  const handleProfileSwitch = async (profileName: string) => {
+    try {
+      await fetch(`http://localhost:8000/config/profile/${profileName}`, {
+        method: 'POST'
+      })
+    } catch (error) {
+      console.error('Failed to switch profile:', error)
     }
+  }
 
-    updateOrderbook({
-      bids: testBids,
-      asks: testAsks,
-      mid_price: testMidPrice,
-      spread: testSpread
-    })
-    updateMetrics({
-      memory_usage_mb: 20 + (Date.now() % 30),
-      queue_size: 100 + (Date.now() % 500)
-    })
+  const getModeDisplayInfo = (mode: string) => {
+    switch (mode) {
+      case 'stable-mode':
+        return { 
+          emoji: '🟢', 
+          name: 'Stable Mode', 
+          color: 'text-green-600 bg-green-50',
+          description: 'Normal operation - Low latency'
+        }
+      case 'burst-mode':
+        return { 
+          emoji: '🟡', 
+          name: 'Burst Mode', 
+          color: 'text-yellow-600 bg-yellow-50',
+          description: 'High frequency spikes'
+        }
+      case 'gradual-spike':
+        return { 
+          emoji: '🟠', 
+          name: 'Gradual Spike', 
+          color: 'text-orange-600 bg-orange-50',
+          description: 'Progressive load increase'
+        }
+      case 'extreme-spike':
+        return { 
+          emoji: '🔴', 
+          name: 'Extreme Spike', 
+          color: 'text-red-600 bg-red-50',
+          description: 'Maximum stress - High latency'
+        }
+      default:
+        return { 
+          emoji: '⚪', 
+          name: 'Unknown', 
+          color: 'text-gray-600 bg-gray-50',
+          description: 'Unknown mode'
+        }
+    }
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white">
+    <div className="min-h-screen bg-white">
       {/* Header */}
-      <header className="border-b border-gray-800 bg-gray-950">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                <Activity className="w-5 h-5" />
+      <header className="bg-white border-b border-gray-100 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-2">
+              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
+                <TrendingUp className="w-4 h-4 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold">SRE Dashboard</h1>
-                <p className="text-sm text-gray-400">MarketDataPublisher - AI SRE Training</p>
+                <h1 className="text-xl font-semibold text-gray-900">BTC/USDT</h1>
+                <p className="text-sm text-gray-500">Market Data Monitor</p>
               </div>
             </div>
+          </div>
 
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2">
-                {isConnected ? (
-                  <Wifi className="w-4 h-4 text-green-400" />
-                ) : (
-                  <WifiOff className="w-4 h-4 text-red-400" />
-                )}
-                <span className="text-sm">
-                  {isConnected ? 'Connected' : 'Disconnected'}
-                </span>
-              </div>
-
-              {error && (
-                <div className="flex items-center space-x-2 text-red-400">
-                  <AlertTriangle className="w-4 h-4" />
-                  <span className="text-sm">{error}</span>
+          <div className="flex items-center space-x-6">
+            {/* Connection Status */}
+            <div className="flex items-center space-x-2">
+              {isConnected ? (
+                <div className="flex items-center space-x-1">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  <span className="text-sm text-green-600 font-medium">LIVE</span>
+                </div>
+              ) : (
+                <div className="flex items-center space-x-1">
+                  <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                  <span className="text-sm text-red-600 font-medium">OFFLINE</span>
                 </div>
               )}
+            </div>
+
+            {/* Market Mode Switcher */}
+            <div className="flex items-center space-x-3">
+              <span className="text-sm font-medium text-gray-700">Mode:</span>
+              <div className="flex items-center space-x-2">
+                <select
+                  onChange={(e) => handleProfileSwitch(e.target.value)}
+                  value={state.metrics.current_scenario}
+                  className="text-sm font-medium border-2 border-gray-300 rounded-lg px-3 py-2 bg-white shadow-sm hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer min-w-[140px]"
+                >
+                  <option value="stable-mode" className="py-2 text-green-700">🟢 Stable Mode</option>
+                  <option value="burst-mode" className="py-2 text-yellow-700">🟡 Burst Mode</option>
+                  <option value="gradual-spike" className="py-2 text-orange-700">🟠 Gradual Spike</option>
+                  <option value="extreme-spike" className="py-2 text-red-700">🔴 Extreme Spike</option>
+                </select>
+                <div className={`px-2 py-1 rounded-md text-xs font-medium ${getModeDisplayInfo(state.metrics.current_scenario).color}`}>
+                  {getModeDisplayInfo(state.metrics.current_scenario).description}
+                </div>
+              </div>
             </div>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-6">
-        {/* Debug Info */}
-        <div className="mb-4 p-4 bg-gray-800 rounded-lg border border-gray-700">
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-sm font-semibold text-gray-300">Debug Info</h4>
-            <button
-              onClick={testUpdate}
-              className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded"
-            >
-              Test Update
-            </button>
-          </div>
-          <div className="text-xs text-gray-400 space-y-1">
-            <div>Connection: {isConnected ? 'Connected' : 'Disconnected'}</div>
-            <div>Orderbook Bids: {state.orderbook_data.bids.length}</div>
-            <div>Orderbook Asks: {state.orderbook_data.asks.length}</div>
-            <div>Mid Price: ${state.orderbook_data.mid_price.toFixed(2)}</div>
-            <div>Memory: {state.metrics.memory_usage_mb.toFixed(1)} MB</div>
-            <div>Queue: {state.metrics.queue_size}</div>
-            <div>Logs: {state.logs.length}</div>
-          </div>
-        </div>
-
-        {/* Top Row - Controls and Quick Stats */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
-          <ScenarioControls />
-
-          {/* Quick Stats */}
-          <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-green-600/20 rounded-lg flex items-center justify-center">
-                  <Activity className="w-5 h-5 text-green-400" />
+      <div className="flex h-[calc(100vh-80px)]">
+        {/* Orderbook Section */}
+        <div className="flex-1 p-6">
+          <div className="bg-white border border-gray-200 rounded-lg h-full">
+            {/* Orderbook Header */}
+            <div className="border-b border-gray-100 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-4">
+                  <h2 className="text-lg font-semibold text-gray-900">Order Book</h2>
+                  <div className={`px-2 py-1 rounded text-xs font-medium ${getDataFreshnessColor(state.orderbook_data.data_age_ms, state.orderbook_data.is_stale)}`}>
+                    {getDataFreshnessText(state.orderbook_data.data_age_ms, state.orderbook_data.is_stale)}
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm text-gray-400">Server Status</p>
-                  <p className="text-lg font-semibold">
-                    {state.metrics.server_status === 'healthy' ? 'Healthy' :
-                      state.metrics.server_status === 'degraded' ? 'Degraded' : 'Unknown'}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-blue-600/20 rounded-lg flex items-center justify-center">
-                  <Database className="w-5 h-5 text-blue-400" />
-                </div>
-                <div>
-                  <p className="text-sm text-gray-400">Memory Usage</p>
-                  <p className="text-lg font-semibold">{state.metrics.memory_usage_mb.toFixed(1)} MB</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-yellow-600/20 rounded-lg flex items-center justify-center">
-                  <Users className="w-5 h-5 text-yellow-400" />
-                </div>
-                <div>
-                  <p className="text-sm text-gray-400">Active Clients</p>
-                  <p className="text-lg font-semibold">{state.metrics.active_clients}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Orderbook and Metrics Row */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
-          {/* Orderbook */}
-          <div className="xl:col-span-2">
-            <OrderbookView
-              key={`orderbook-${state.orderbook_data.sequence_id}-${state.orderbook_data.timestamp}`}
-              bids={state.orderbook_data.bids}
-              asks={state.orderbook_data.asks}
-              midPrice={state.orderbook_data.mid_price}
-              spread={state.orderbook_data.spread}
-              lastUpdate={state.orderbook_data.timestamp ? new Date(state.orderbook_data.timestamp) : undefined}
-            />
-          </div>
-
-          {/* Metrics Panel */}
-          <div>
-            <MetricsPanel metrics={state.metrics} />
-          </div>
-        </div>
-
-        {/* Performance Chart */}
-        <div className="mb-6">
-          <PerformanceChart data={state.performance_history} />
-        </div>
-
-        {/* Bottom Row - Logs and Incidents */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <LogsPanel logs={state.logs} />
-
-          <div className="bg-gray-800 rounded-lg border border-gray-700">
-            <div className="p-4 border-b border-gray-700">
-              <h3 className="text-lg font-semibold flex items-center space-x-2">
-                <AlertTriangle className="w-5 h-5 text-red-400" />
-                <span>Recent Incidents</span>
-              </h3>
-            </div>
-            <div className="p-4 max-h-80 overflow-y-auto">
-              {state.incidents.length === 0 ? (
-                <div className="text-center text-gray-400 py-8">
-                  <AlertTriangle className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                  <p>No incidents recorded</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {state.incidents.slice(-5).reverse().map((incident, index) => (
-                    <div key={index} className="bg-red-900/20 border border-red-800 rounded-lg p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-semibold text-red-400">{incident.type}</span>
-                        <span className="text-sm text-gray-400">
-                          {new Date(incident.timestamp || '').toLocaleTimeString()}
-                        </span>
-                      </div>
-                      <p className="text-sm text-gray-300">{incident.details}</p>
-                      <p className="text-xs text-gray-500 mt-1">Scenario: {incident.scenario}</p>
+                <div className="flex items-center space-x-6 text-sm text-gray-500">
+                  <div>Mid: {formatPrice(state.orderbook_data.mid_price)}</div>
+                  <div>Spread: {formatPrice(state.orderbook_data.spread)}</div>
+                  <div>Seq: {state.orderbook_data.sequence_id}</div>
+                  {state.orderbook_data.data_age_ms && (
+                    <div className={`font-medium ${state.orderbook_data.data_age_ms > 1000 ? 'text-red-600' : state.orderbook_data.data_age_ms > 500 ? 'text-yellow-600' : 'text-green-600'}`}>
+                      Age: {state.orderbook_data.data_age_ms.toFixed(0)}ms
                     </div>
-                  ))}
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Critical Staleness Alert */}
+            {state.orderbook_data.is_stale && state.orderbook_data.data_age_ms > 1000 && (
+              <div className="bg-red-50 border-l-4 border-red-400 p-4 m-4">
+                <div className="flex items-center">
+                  <AlertTriangle className="w-5 h-5 text-red-600 mr-2" />
+                  <div>
+                    <p className="font-medium text-red-800">CRITICAL: Data Staleness Detected</p>
+                    <p className="text-sm text-red-600">
+                      Data received {state.orderbook_data.data_age_ms.toFixed(0)}ms ago - Processing lag detected
+                    </p>
+                    <p className="text-xs text-red-500 mt-1">
+                      Data Age = Time from exchange receipt to client delivery
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Orderbook Content */}
+            <div className="flex-1 p-4">
+              <div className="grid grid-cols-2 gap-6 h-full">
+                {/* Asks (Sell Orders) */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs text-gray-500 font-medium border-b pb-2">
+                    <span>Price (USD)</span>
+                    <span>Size (BTC)</span>
+                  </div>
+                  <div className="space-y-1 max-h-96 overflow-y-auto">
+                    {state.orderbook_data.asks.slice(0, 15).reverse().map((ask, index) => (
+                      <div key={index} className="flex justify-between text-sm py-1 px-2 hover:bg-red-50 rounded">
+                        <span className="text-red-600 font-mono font-medium">{formatPrice(parseFloat(ask[0]))}</span>
+                        <span className="text-gray-600 font-mono">{formatQuantity(ask[1])}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Bids (Buy Orders) */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs text-gray-500 font-medium border-b pb-2">
+                    <span>Price (USD)</span>
+                    <span>Size (BTC)</span>
+                  </div>
+                  <div className="space-y-1 max-h-96 overflow-y-auto">
+                    {state.orderbook_data.bids.slice(0, 15).map((bid, index) => (
+                      <div key={index} className="flex justify-between text-sm py-1 px-2 hover:bg-green-50 rounded">
+                        <span className="text-green-600 font-mono font-medium">{formatPrice(parseFloat(bid[0]))}</span>
+                        <span className="text-gray-600 font-mono">{formatQuantity(bid[1])}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* No Data State */}
+              {state.orderbook_data.bids.length === 0 && state.orderbook_data.asks.length === 0 && (
+                <div className="flex items-center justify-center h-64 text-gray-500">
+                  <div className="text-center">
+                    <Activity className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                    <p className="text-sm">Waiting for market data...</p>
+                  </div>
                 </div>
               )}
             </div>
           </div>
         </div>
-      </main>
+
+        {/* System Metrics Sidebar */}
+        <div className="w-80 p-6 border-l border-gray-200">
+          <div className="space-y-6">
+            {/* System Health */}
+            <div className="bg-white border border-gray-200 rounded-lg p-4">
+              <h3 className="text-sm font-medium text-gray-900 mb-3">System Health</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Database className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm text-gray-600">Memory</span>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-medium text-gray-900">
+                      {state.metrics.memory_usage_mb.toFixed(1)} MB
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {((state.metrics.memory_usage_mb / 512) * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Clock className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm text-gray-600">Queue</span>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-medium text-gray-900">
+                      {state.metrics.queue_size}
+                    </div>
+                    <div className="text-xs text-gray-500">messages</div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Zap className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm text-gray-600">Delay</span>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-medium text-gray-900">
+                      {state.metrics.processing_delay_ms}ms
+                    </div>
+                    <div className="text-xs text-gray-500">processing</div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Users className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm text-gray-600">Clients</span>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-medium text-gray-900">
+                      {state.metrics.active_clients}
+                    </div>
+                    <div className="text-xs text-gray-500">connected</div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Activity className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm text-gray-600">Data Age</span>
+                  </div>
+                  <div className="text-right">
+                    <div className={`text-sm font-medium ${state.orderbook_data.data_age_ms > 1000 ? 'text-red-600' : state.orderbook_data.data_age_ms > 500 ? 'text-yellow-600' : 'text-green-600'}`}>
+                      {state.orderbook_data.data_age_ms ? state.orderbook_data.data_age_ms.toFixed(0) + 'ms' : '0ms'}
+                    </div>
+                    <div className="text-xs text-gray-500">staleness</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Incidents */}
+            <div className="bg-white border border-gray-200 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-gray-900">System Alerts</h3>
+                {incidentCount > 0 && (
+                  <span className="bg-red-100 text-red-800 text-xs font-medium px-2 py-1 rounded">
+                    {incidentCount}
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {state.incidents.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500">
+                    <div className="text-sm">No incidents detected</div>
+                    <div className="text-xs text-gray-400">System running normally</div>
+                  </div>
+                ) : (
+                  state.incidents.slice(-5).reverse().map((incident, index) => (
+                    <div key={index} className="border border-red-200 rounded-lg p-3 bg-red-50">
+                      <div className="flex items-start space-x-2">
+                        <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-red-900">{incident.type}</div>
+                          <div className="text-xs text-red-700 mt-1">{incident.details}</div>
+                          <div className="text-xs text-red-600 mt-1">
+                            {new Date(incident.timestamp).toLocaleTimeString()}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Current Status */}
+            <div className="bg-white border border-gray-200 rounded-lg p-4">
+              <h3 className="text-sm font-medium text-gray-900 mb-3">Current Status</h3>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Server</span>
+                  <span className={`text-sm font-medium ${state.metrics.server_status === 'healthy' ? 'text-green-600' : 'text-yellow-600'}`}>
+                    {state.metrics.server_status === 'healthy' ? 'Healthy' : 'Degraded'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Profile</span>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-sm">
+                      {getModeDisplayInfo(state.metrics.current_scenario).emoji}
+                    </span>
+                    <span className="text-sm font-medium text-gray-900">
+                      {getModeDisplayInfo(state.metrics.current_scenario).name}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Uptime</span>
+                  <span className="text-sm font-medium text-gray-900">
+                    {Math.floor(state.metrics.uptime_seconds / 60)}m {Math.floor(state.metrics.uptime_seconds % 60)}s
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

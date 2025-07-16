@@ -10,6 +10,9 @@ interface OrderbookData {
     spread: number
     sequence_id: number
     timestamp: string | null
+    data_age_ms?: number
+    is_stale?: boolean
+    processing_delay_ms?: number
 }
 
 interface Metrics {
@@ -58,7 +61,10 @@ const initialState: DashboardState = {
         mid_price: 0,
         spread: 0,
         sequence_id: 0,
-        timestamp: null
+        timestamp: null,
+        data_age_ms: 0,
+        is_stale: false,
+        processing_delay_ms: 0
     },
     metrics: generateSampleMetrics(),
     incidents: [],

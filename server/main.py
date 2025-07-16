@@ -18,7 +18,7 @@ import uvicorn
 from config import ServerConfig
 from models import ServerStatus, HeartbeatMessage
 from utils.logger import setup_logger
-from data_loader import SyntheticDataLoader, OrderbookParser, DataSimulator
+from data_loader import MarketDataLoader, OrderbookParser, DataPublisher
 from queue_processor import MessageQueueProcessor
 
 # Setup logging
@@ -27,14 +27,14 @@ logger = setup_logger(__name__)
 # Create FastAPI app
 app = FastAPI(
     title="MarketDataPublisher",
-    description="Real-time orderbook data publisher with incident simulation",
+    description="Real-time orderbook data publisher",
     version="1.0.0"
 )
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,9 +47,9 @@ total_messages_processed = 0
 current_scenario = ServerConfig.INITIAL_SCENARIO
 
 # Initialize components
-data_loader = SyntheticDataLoader()
+data_loader = MarketDataLoader()
 orderbook_parser = OrderbookParser()
-data_simulator = DataSimulator(data_loader, orderbook_parser)
+data_publisher = DataPublisher(data_loader, orderbook_parser)
 queue_processor = MessageQueueProcessor()
 
 class ConnectionManager:
@@ -102,6 +102,14 @@ def signal_handler(signum, frame):
     """Handle shutdown signals"""
     logger.info(f"Received signal {signum}, initiating shutdown...")
     server_shutdown_event.set()
+    # Force exit after a short delay to prevent hanging
+    import threading
+    def force_exit():
+        import time
+        time.sleep(2)
+        import os
+        os._exit(0)
+    threading.Thread(target=force_exit, daemon=True).start()
 
 # Register signal handlers
 signal.signal(signal.SIGINT, signal_handler)
@@ -133,7 +141,9 @@ async def handle_heartbeat(heartbeat: HeartbeatMessage):
         "queue_size": heartbeat.queue_size,
         "memory_usage_mb": heartbeat.memory_usage_mb,
         "active_clients": heartbeat.active_clients,
-        "current_scenario": heartbeat.current_scenario
+        "current_scenario": heartbeat.current_scenario,
+        "processing_delay_ms": queue_processor._get_processing_delay() if queue_processor else 0,
+        "uptime_seconds": time.time() - server_start_time
     }
     
     # Broadcast heartbeat to all clients
@@ -159,16 +169,16 @@ async def handle_incident_alert(incident_data: dict):
 @app.on_event("startup")
 async def startup_event():
     """Server startup event"""
-    global server_start_time, data_loader, queue_processor
+    global server_start_time, data_loader, queue_processor, publishing_running, publishing_task
     server_start_time = time.time()
     logger.info("MarketDataPublisher server starting up...")
     logger.info(f"Server will run on {ServerConfig.HOST}:{ServerConfig.PORT}")
     
-    # Load all scenarios
+    # Load all profiles
     if data_loader.load_all_scenarios():
-        logger.info("All scenarios loaded successfully")
+        logger.info("All performance profiles loaded successfully")
     else:
-        logger.error("Failed to load some scenarios")
+        logger.error("Failed to load some performance profiles")
     
     # Set up queue processor callbacks
     queue_processor.set_callbacks(
@@ -181,14 +191,25 @@ async def startup_event():
     await queue_processor.start()
     logger.info("Queue processor started")
     
+    # Auto-start data publishing
+    publishing_running = True
+    publishing_task = asyncio.create_task(run_data_publishing())
+    logger.info("Data publishing started automatically")
+    
     # Start shutdown monitor
     asyncio.create_task(_monitor_shutdown())
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Server shutdown event"""
-    global queue_processor
+    global queue_processor, publishing_running, publishing_task
     logger.info("MarketDataPublisher server shutting down...")
+    
+    # Stop data publishing
+    publishing_running = False
+    if publishing_task and not publishing_task.done():
+        publishing_task.cancel()
+    logger.info("Data publishing stopped")
     
     # Stop queue processor
     if queue_processor:
@@ -326,131 +347,99 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         manager.disconnect(websocket)
 
-@app.get("/scenarios")
-async def list_scenarios():
-    """List available scenarios"""
+@app.get("/config/profiles")
+async def list_profiles():
+    """List available performance profiles"""
     return {
-        "available_scenarios": list(ServerConfig.SCENARIOS.keys()),
-        "current_scenario": current_scenario,
-        "scenario_files": ServerConfig.SCENARIOS
+        "available_profiles": list(ServerConfig.SCENARIOS.keys()),
+        "current_profile": current_scenario,
+        "profile_configs": ServerConfig.SCENARIOS
     }
 
-@app.post("/scenarios/{scenario_name}")
-async def switch_scenario(scenario_name: str):
-    """Switch to a different scenario"""
-    global current_scenario, queue_processor
+@app.post("/config/profile/{profile_name}")
+async def switch_profile(profile_name: str):
+    """Switch to a different performance profile"""
+    global current_scenario, queue_processor, publishing_task, data_publisher, publishing_running
     
-    logger.info(f"Received scenario switch request: {scenario_name}")
+    logger.info(f"Received profile switch request: {profile_name}")
     
-    if scenario_name not in ServerConfig.SCENARIOS:
-        logger.error(f"Scenario '{scenario_name}' not found. Available: {list(ServerConfig.SCENARIOS.keys())}")
-        raise HTTPException(status_code=400, detail=f"Scenario '{scenario_name}' not found")
+    if profile_name not in ServerConfig.SCENARIOS:
+        logger.error(f"Profile '{profile_name}' not found. Available: {list(ServerConfig.SCENARIOS.keys())}")
+        raise HTTPException(status_code=400, detail=f"Profile '{profile_name}' not found")
     
-    current_scenario = scenario_name
+    current_scenario = profile_name
     
-    # Switch scenario in queue processor
+    # Switch profile in queue processor
     if queue_processor:
-        queue_processor.switch_scenario(scenario_name)
+        queue_processor.switch_scenario(profile_name)
     
-    logger.info(f"Successfully switched to scenario: {scenario_name}")
+    # Switch profile in data publisher (via data loader)
+    if data_publisher and data_publisher.data_loader:
+        data_publisher.data_loader.switch_scenario(profile_name)
+    
+    # Restart the publishing task with the new scenario
+    if publishing_task and not publishing_task.done():
+        publishing_task.cancel()
+        logger.info("Cancelled previous publishing task")
+        
+        # Wait a brief moment for the cancellation to complete
+        try:
+            await asyncio.wait_for(publishing_task, timeout=1.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            logger.info("Publishing task cancellation completed")
+    
+    # Set publishing flag to True and start new publishing task
+    publishing_running = True
+    publishing_task = asyncio.create_task(run_data_publishing())
+    logger.info(f"Started new publishing task for scenario: {profile_name}")
+    
+    logger.info(f"Successfully switched to profile: {profile_name}")
     
     return {
-        "message": f"Switched to scenario: {scenario_name}",
-        "scenario": scenario_name,
+        "message": f"Switched to profile: {profile_name}",
+        "profile": profile_name,
         "timestamp": datetime.utcnow().isoformat()
     }
 
-# Global simulation control
-simulation_running = False
-simulation_task = None
+# Global data publishing control
+publishing_running = False
+publishing_task = None
 
-@app.post("/simulation/start")
-async def start_simulation():
-    """Start data simulation"""
-    global data_simulator, queue_processor, simulation_running, simulation_task
-    
-    logger.info("Received simulation start request")
-    
-    if simulation_running:
-        return {
-            "message": "Simulation already running",
-            "scenario": current_scenario,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+async def run_data_publishing():
+    """Run the data publishing"""
+    global data_publisher, queue_processor, publishing_running
     
     try:
-        simulation_running = True
-        # Start simulation in background
-        simulation_task = asyncio.create_task(run_simulation())
-        
-        logger.info("Simulation started successfully")
-        return {
-            "message": "Data simulation started",
-            "scenario": current_scenario,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        simulation_running = False
-        logger.error(f"Error starting simulation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start simulation: {e}")
-
-@app.post("/simulation/stop")
-async def stop_simulation():
-    """Stop data simulation"""
-    global simulation_running, simulation_task
-    
-    logger.info("Received simulation stop request")
-    
-    if not simulation_running:
-        return {
-            "message": "Simulation not running",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    
-    try:
-        simulation_running = False
-        if simulation_task and not simulation_task.done():
-            simulation_task.cancel()
-        
-        logger.info("Simulation stopped successfully")
-        return {
-            "message": "Data simulation stopped",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error stopping simulation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to stop simulation: {e}")
-
-async def run_simulation():
-    """Run the data simulation"""
-    global data_simulator, queue_processor, simulation_running
-    
-    try:
-        async for orderbook in data_simulator.start_simulation(current_scenario, speed_multiplier=1.0):
-            if not simulation_running:
-                logger.info("Simulation stopped by user request")
+        logger.info(f"Starting data publishing for scenario: {current_scenario}")
+        async for orderbook in data_publisher.start_publishing(current_scenario, speed_multiplier=2.0, loop_continuously=True):
+            if not publishing_running:
+                logger.info("Data publishing stopped by request")
                 break
             # Add orderbook to queue for processing
             await queue_processor.add_orderbook(orderbook)
             
     except asyncio.CancelledError:
-        logger.info("Simulation task cancelled")
+        logger.info("Publishing task cancelled")
+        raise  # Re-raise CancelledError to ensure proper cleanup
     except Exception as e:
-        logger.error(f"Error in simulation: {e}")
+        logger.error(f"Error in data publishing: {e}")
     finally:
-        simulation_running = False
+        publishing_running = False
+        logger.info("Data publishing task finished")
 
-@app.get("/simulation/status")
-async def get_simulation_status():
-    """Get simulation status"""
-    global data_simulator
+@app.get("/status/publisher")
+async def get_publisher_status():
+    """Get data publisher status"""
+    global data_publisher
     
-    status = data_simulator.get_simulation_status()
+    status = data_publisher.get_publishing_status()
     return {
-        "simulation": status,
-        "scenario_info": data_loader.get_current_scenario_info(),
+        "publisher": status,
+        "profile_info": data_loader.get_current_scenario_info(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
 
 if __name__ == "__main__":
     uvicorn.run(

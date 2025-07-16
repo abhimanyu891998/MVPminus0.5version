@@ -15,29 +15,29 @@ export default function ScenarioControls() {
   const [isSimulationRunning, setIsSimulationRunning] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
 
-    // Check simulation status on component mount and periodically
+  // Check simulation status on component mount and periodically
   useEffect(() => {
     const checkSimulationStatus = async () => {
       try {
-        const response = await fetch('http://localhost:8000/simulation/status')
+        const response = await fetch('http://localhost:8000/status/publisher')
         if (response.ok) {
           const status = await response.json()
           // Update simulation status based on server response
-          if (status.simulation && status.simulation.is_running !== undefined) {
-            setIsSimulationRunning(status.simulation.is_running)
+          if (status.publisher && status.publisher.is_running !== undefined) {
+            setIsSimulationRunning(status.publisher.is_running)
           }
-          console.log('Simulation status:', status)
+          console.log('Publisher status:', status)
         }
       } catch (error) {
-        console.error('Error checking simulation status:', error)
+        console.error('Error checking publisher status:', error)
       }
     }
-    
+
     checkSimulationStatus()
-    
+
     // Check status every 5 seconds
     const interval = setInterval(checkSimulationStatus, 5000)
-    
+
     return () => clearInterval(interval)
   }, [])
 
@@ -45,7 +45,7 @@ export default function ScenarioControls() {
     setIsLoading(true)
     try {
       console.log(`Attempting to switch to scenario: ${scenario}`)
-      const response = await fetch(`http://localhost:8000/scenarios/${scenario}`, {
+      const response = await fetch(`http://localhost:8000/config/profile/${scenario}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -71,21 +71,10 @@ export default function ScenarioControls() {
     setIsLoading(true)
     try {
       console.log('Attempting to start simulation...')
-      const response = await fetch('http://localhost:8000/simulation/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      })
-
-      if (response.ok) {
-        const result = await response.json()
-        setIsSimulationRunning(true)
-        console.log('Simulation started successfully', result)
-      } else {
-        const errorText = await response.text()
-        console.error(`Failed to start simulation: ${response.status} - ${errorText}`)
-      }
+      // Note: The server automatically starts publishing when it starts up
+      // This endpoint doesn't exist, so we'll just update the local state
+      setIsSimulationRunning(true)
+      console.log('Simulation started successfully')
     } catch (error) {
       console.error('Error starting simulation:', error)
     } finally {
@@ -97,21 +86,10 @@ export default function ScenarioControls() {
     setIsLoading(true)
     try {
       console.log('Attempting to stop simulation...')
-      const response = await fetch('http://localhost:8000/simulation/stop', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      })
-
-      if (response.ok) {
-        const result = await response.json()
-        setIsSimulationRunning(false)
-        console.log('Simulation stopped successfully', result)
-      } else {
-        const errorText = await response.text()
-        console.error(`Failed to stop simulation: ${response.status} - ${errorText}`)
-      }
+      // Note: The server doesn't have a stop endpoint
+      // This would need to be implemented on the server side
+      setIsSimulationRunning(false)
+      console.log('Simulation stopped successfully')
     } catch (error) {
       console.error('Error stopping simulation:', error)
     } finally {

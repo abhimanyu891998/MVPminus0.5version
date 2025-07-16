@@ -1,5 +1,5 @@
 """
-Data loader for synthetic market data scenarios
+Data loader for market data scenarios
 """
 
 import json
@@ -15,8 +15,8 @@ from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-class SyntheticDataLoader:
-    """Load and manage synthetic market data scenarios"""
+class MarketDataLoader:
+    """Load and manage market data scenarios"""
     
     def __init__(self):
         self.data_dir = Path(ServerConfig.DATA_DIR)
@@ -92,7 +92,7 @@ class SyntheticDataLoader:
             "progress_percent": (self.current_update_index / metadata.get('totalUpdates', 1)) * 100 if metadata.get('totalUpdates', 0) > 0 else 0
         }
     
-    def get_next_update(self) -> Optional[Dict[str, Any]]:
+    def get_next_update(self, loop_on_end: bool = True) -> Optional[Dict[str, Any]]:
         """Get the next update from the current scenario"""
         if not self.current_scenario_data:
             return None
@@ -100,8 +100,12 @@ class SyntheticDataLoader:
         updates = self.current_scenario_data['updates']
         
         if self.current_update_index >= len(updates):
-            logger.info(f"Reached end of scenario '{self.current_scenario}'")
-            return None
+            if loop_on_end:
+                logger.info(f"Reached end of scenario '{self.current_scenario}', looping back to beginning")
+                self.current_update_index = 0
+            else:
+                logger.info(f"Reached end of scenario '{self.current_scenario}'")
+                return None
         
         update = updates[self.current_update_index]
         self.current_update_index += 1
@@ -162,8 +166,13 @@ class OrderbookParser:
             sequence_id=sequence_id,
             timestamp_received=timestamp_received,
             timestamp_parsed=datetime.utcnow(),
+            timestamp_processed=None,
             bids=bids,
-            asks=asks
+            asks=asks,
+            spread=None,
+            mid_price=None,
+            data_age_ms=None,
+            processing_delay_ms=None
         )
         
         # Calculate derived fields
@@ -203,28 +212,32 @@ class OrderbookParser:
             logger.error(f"Orderbook validation error: {e}")
             return False
 
-class DataSimulator:
-    """Simulate real-time data feed from synthetic data"""
+class DataPublisher:
+    """Publish real-time market data feed"""
     
-    def __init__(self, data_loader: SyntheticDataLoader, parser: OrderbookParser):
+    def __init__(self, data_loader: MarketDataLoader, parser: OrderbookParser):
         self.data_loader = data_loader
         self.parser = parser
         self.is_running = False
-        self.simulation_speed = 1.0  # Speed multiplier (1.0 = real-time)
+        self.publish_speed = 1.0  # Publishing speed multiplier (1.0 = real-time)
         
-    async def start_simulation(self, scenario_name: str, speed_multiplier: float = 1.0):
-        """Start simulating data feed for a scenario"""
+    async def start_publishing(self, scenario_name: str, speed_multiplier: float = 1.0, loop_continuously: bool = True):
+        """Start publishing data feed for a scenario"""
         if not self.data_loader.switch_scenario(scenario_name):
             logger.error(f"Failed to switch to scenario: {scenario_name}")
             return
         
-        self.simulation_speed = speed_multiplier
+        self.publish_speed = speed_multiplier
         self.is_running = True
         
         scenario_info = self.data_loader.get_current_scenario_info()
-        logger.info(f"Starting simulation for '{scenario_name}': {scenario_info['total_updates']} updates")
+        logger.info(f"Starting data publishing for '{scenario_name}': {scenario_info['total_updates']} updates (looping: {loop_continuously})")
         
         # Calculate timing based on scenario
+        if not self.data_loader.current_scenario_data:
+            logger.error("No scenario data available")
+            return
+        
         scenario = self.data_loader.current_scenario_data['scenario']
         total_duration = scenario.get('duration', 10000)  # milliseconds
         total_updates = scenario_info['total_updates']
@@ -235,14 +248,19 @@ class DataSimulator:
         else:
             adjusted_interval = 0.1  # default 100ms
         
-        logger.info(f"Simulation timing: {adjusted_interval:.3f}s between updates (speed: {speed_multiplier}x)")
+        logger.info(f"Publishing timing: {adjusted_interval:.3f}s between updates (speed: {speed_multiplier}x)")
         
         while self.is_running:
-            update = self.data_loader.get_next_update()
+            update = self.data_loader.get_next_update(loop_on_end=loop_continuously)
             
             if update is None:
-                logger.info(f"Simulation completed for scenario: {scenario_name}")
-                break
+                if not loop_continuously:
+                    logger.info(f"Data publishing completed for scenario: {scenario_name}")
+                    break
+                else:
+                    # This shouldn't happen if looping is enabled, but just in case
+                    logger.warning(f"Unexpected end of data for scenario: {scenario_name}, stopping")
+                    break
             
             # Parse the update
             try:
@@ -261,17 +279,17 @@ class DataSimulator:
             if adjusted_interval > 0:
                 await asyncio.sleep(adjusted_interval)
     
-    def stop_simulation(self):
-        """Stop the simulation"""
+    def stop_publishing(self):
+        """Stop the data publishing"""
         self.is_running = False
-        logger.info("Simulation stopped")
+        logger.info("Data publishing stopped")
     
-    def get_simulation_status(self) -> Dict[str, Any]:
-        """Get current simulation status"""
+    def get_publishing_status(self) -> Dict[str, Any]:
+        """Get current publishing status"""
         progress = self.data_loader.get_scenario_progress()
         
         return {
             "is_running": self.is_running,
-            "speed_multiplier": self.simulation_speed,
+            "speed_multiplier": self.publish_speed,
             "progress": progress
         } 

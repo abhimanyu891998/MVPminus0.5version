@@ -22,10 +22,13 @@ class InternalOrderbook(BaseModel):
     sequence_id: int = Field(..., description="Update sequence ID")
     timestamp_received: datetime = Field(..., description="When data was received from exchange")
     timestamp_parsed: datetime = Field(..., description="When data was parsed internally")
+    timestamp_processed: Optional[datetime] = Field(None, description="When data was processed and sent to clients")
     bids: List[OrderbookLevel] = Field(..., description="Top 15 bid levels")
     asks: List[OrderbookLevel] = Field(..., description="Top 15 ask levels")
     spread: Optional[float] = Field(None, description="Current spread")
     mid_price: Optional[float] = Field(None, description="Mid price")
+    data_age_ms: Optional[float] = Field(None, description="Age of data when processed")
+    processing_delay_ms: Optional[float] = Field(None, description="Processing delay for this message")
     
     def calculate_derived_fields(self):
         """Calculate spread and mid price"""
@@ -35,6 +38,12 @@ class InternalOrderbook(BaseModel):
             self.spread = best_ask - best_bid
             self.mid_price = (best_bid + best_ask) / 2
     
+    def calculate_data_age(self):
+        """Calculate how old the data is when processed"""
+        if self.timestamp_processed and self.timestamp_received:
+            age_delta = self.timestamp_processed - self.timestamp_received
+            self.data_age_ms = age_delta.total_seconds() * 1000
+    
     def to_dict(self) -> dict:
         """Convert to dictionary for WebSocket transmission"""
         return {
@@ -42,10 +51,13 @@ class InternalOrderbook(BaseModel):
             "sequence_id": self.sequence_id,
             "timestamp_received": self.timestamp_received.isoformat(),
             "timestamp_parsed": self.timestamp_parsed.isoformat(),
+            "timestamp_processed": self.timestamp_processed.isoformat() if self.timestamp_processed else None,
             "bids": [level.to_tuple() for level in self.bids],
             "asks": [level.to_tuple() for level in self.asks],
             "spread": self.spread,
-            "mid_price": self.mid_price
+            "mid_price": self.mid_price,
+            "data_age_ms": self.data_age_ms,
+            "processing_delay_ms": self.processing_delay_ms
         }
 
 class HeartbeatMessage(BaseModel):

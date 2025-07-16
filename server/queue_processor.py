@@ -1,22 +1,25 @@
 """
-Message queue processor with intentional delays for incident simulation
+Message queue processor with configurable delays for performance optimization
 """
 
 import asyncio
 import time
 import psutil
+import re
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import json
 
-from config import ServerConfig, IncidentSimulationConfig
+from config import ServerConfig, PerformanceConfig
 from models import InternalOrderbook, HeartbeatMessage
-from utils.logger import setup_logger
+from utils.logger import setup_logger, setup_data_logger, setup_system_logger, log_orderbook_update
 
 logger = setup_logger(__name__)
+data_logger = setup_data_logger()
+system_logger = setup_system_logger()
 
 class MessageQueueProcessor:
-    """Process orderbook messages with configurable delays for incident simulation"""
+    """Process orderbook messages with configurable delays for performance tuning"""
     
     def __init__(self):
         self.queue = asyncio.Queue(maxsize=ServerConfig.MAX_QUEUE_SIZE)
@@ -28,6 +31,12 @@ class MessageQueueProcessor:
         self.memory_threshold_mb = ServerConfig.MEMORY_THRESHOLD_MB
         self.incident_triggered = False
         self.start_time = time.time()
+        self.last_processing_time_ms = 0  # Track actual processing time
+        
+        # Data validation and audit trail
+        self.sequence_validation_cache = []  # Keep recent sequences for validation
+        self.price_validation_history = {}   # Cache for price validation
+        self.audit_trail = []                # Audit trail for compliance
         
         # Background tasks
         self.background_tasks = []
@@ -88,31 +97,52 @@ class MessageQueueProcessor:
             logger.error(f"Error adding orderbook to queue: {e}")
     
     async def _process_queue(self):
-        """Process messages from the queue with intentional delays"""
+        """Process messages from the queue with data validation and audit operations"""
         while self.is_running:
             try:
                 # Get message from queue
                 orderbook = await self.queue.get()
                 
-                # Simulate processing delay (this is the "bad code" for incident simulation)
+                # Data validation and sequence verification
                 processing_start = time.time()
                 
-                # Get delay for current scenario
-                delay_ms = self._get_processing_delay()
-                await asyncio.sleep(delay_ms / 1000.0)  # Convert to seconds
+                # Perform data validation and audit operations
+                await self._validate_sequence_integrity(orderbook)
+                await self._update_audit_trail(orderbook)
+                
+                # Add scenario-based processing delay to simulate realistic bottlenecks
+                base_delays = PerformanceConfig.get_processing_delays()
+                scenario_delay = base_delays.get(self.current_scenario, ServerConfig.PROCESSING_DELAY_MS)
+                await asyncio.sleep(scenario_delay / 1000.0)  # Convert ms to seconds
                 
                 processing_time = (time.time() - processing_start) * 1000  # Convert to ms
                 
                 # Process the orderbook (simulate some work)
                 await self._process_orderbook(orderbook, processing_time)
                 
+                # Track actual processing time for UI display
+                self.last_processing_time_ms = processing_time
+                
                 # Mark task as done
                 self.queue.task_done()
                 self.total_messages_processed += 1
                 
-                # Log processing metrics periodically
-                if self.total_messages_processed % 50 == 0:
+                # Log processing metrics and queue health
+                if self.total_messages_processed % 20 == 0:  # More frequent logging for better forensics
                     await self._log_processing_metrics()
+                
+                # Log queue growth warnings
+                queue_size = self.queue.qsize()
+                if queue_size > 10 and queue_size % 25 == 0:
+                    memory_mb = self._get_memory_usage()
+                    estimated_delay = self._get_processing_delay()
+                    logger.warning(f"Queue backlog growing: {queue_size} messages, Memory: {memory_mb:.1f}MB, Processing delay: {estimated_delay}ms")
+                    
+                # Log individual slow processing
+                if processing_time > 100:  # Log if processing > 100ms
+                    logger.error(f"Processing backlog detected: {processing_time:.1f}ms per message (queue: {queue_size})")
+                elif processing_time > 50:  # Warn if > 50ms
+                    logger.warning(f"Processing delay exceeded normal range: {processing_time:.1f}ms")
                     
             except asyncio.CancelledError:
                 break
@@ -122,15 +152,38 @@ class MessageQueueProcessor:
     async def _process_orderbook(self, orderbook: InternalOrderbook, processing_time_ms: float):
         """Process a single orderbook update"""
         try:
-            # Simulate some processing work
+            # Mark when processing completes
+            orderbook.timestamp_processed = datetime.utcnow()
+            orderbook.processing_delay_ms = processing_time_ms
+            orderbook.calculate_data_age()
+            
+            # Check for data staleness
+            staleness_threshold = 500  # 500ms (lowered from 2000ms for demo)
+            is_stale = orderbook.data_age_ms and orderbook.data_age_ms > staleness_threshold
+            
             processed_data = orderbook.to_dict()
             
             # Add processing metadata
-            processed_data['processing_time_ms'] = processing_time_ms
             processed_data['queue_position'] = self.queue.qsize()
+            processed_data['is_stale'] = is_stale
             
-            # Log the processed orderbook
-            logger.info(f"Processed orderbook {orderbook.sequence_id} in {processing_time_ms:.2f}ms")
+            # Enhanced logging with staleness info
+            if is_stale:
+                system_logger.warning(f"Stale data detected: orderbook {orderbook.sequence_id} aged {orderbook.data_age_ms:.1f}ms (threshold: {staleness_threshold}ms)")
+            
+            # Log processing with performance metrics
+            if processing_time_ms > 50:  # Log slow processing
+                system_logger.warning(f"Slow processing detected: orderbook {orderbook.sequence_id} took {processing_time_ms:.2f}ms")
+            else:
+                system_logger.info(f"Processed orderbook {orderbook.sequence_id} in {processing_time_ms:.2f}ms (data age: {orderbook.data_age_ms:.1f}ms)")
+            
+            # Log orderbook data to separate file
+            log_orderbook_update(data_logger, system_logger, processed_data, processing_time_ms)
+            
+            # Trigger staleness alerts
+            if is_stale and orderbook.data_age_ms > 1000:  # Critical staleness > 1s (lowered from 5s)
+                system_logger.error(f"Critical data staleness: {orderbook.data_age_ms:.1f}ms lag on orderbook {orderbook.sequence_id}")
+                await self._trigger_staleness_alert(orderbook)
             
             # Call callback if registered
             if self.on_orderbook_processed:
@@ -156,6 +209,20 @@ class MessageQueueProcessor:
                 logger.error(f"Error in heartbeat loop: {e}")
                 await asyncio.sleep(1)  # Brief pause on error
     
+    async def _trigger_staleness_alert(self, orderbook: InternalOrderbook):
+        """Trigger alert for stale data"""
+        staleness_data = {
+            "type": "stale_data",
+            "sequence_id": orderbook.sequence_id,
+            "data_age_ms": orderbook.data_age_ms,
+            "processing_delay_ms": orderbook.processing_delay_ms,
+            "queue_size": self.queue.qsize(),
+            "memory_usage_mb": self._get_memory_usage()
+        }
+        
+        if self.on_incident_alert:
+            await self.on_incident_alert(staleness_data)
+    
     async def _memory_monitor(self):
         """Monitor memory usage for incident simulation"""
         while self.is_running:
@@ -170,6 +237,11 @@ class MessageQueueProcessor:
                         "queue_size": self.queue.qsize()
                     })
                 
+                # Reset incident flag after some time to allow multiple incidents
+                if memory_usage <= self.memory_threshold_mb and self.incident_triggered:
+                    self.incident_triggered = False
+                    logger.info("Memory usage returned to normal - incident flag reset")
+                
                 # Wait before next check
                 await asyncio.sleep(5)  # Check every 5 seconds
                 
@@ -177,7 +249,7 @@ class MessageQueueProcessor:
                 logger.error(f"Error in memory monitor: {e}")
     
     async def _trigger_incident(self, incident_type: str, details: Dict[str, Any]):
-        """Trigger an incident simulation"""
+        """Handle system performance degradation"""
         self.incident_triggered = True
         
         incident_data = {
@@ -188,18 +260,17 @@ class MessageQueueProcessor:
             "uptime_seconds": time.time() - self.start_time
         }
         
-        logger.warning(f"INCIDENT TRIGGERED: {incident_type}", extra=incident_data)
+        logger.warning(f"High memory usage detected - processing backlog: {incident_type}", extra=incident_data)
         
         # Call incident callback if registered
         if self.on_incident_alert:
             await self.on_incident_alert(incident_data)
         
-        # Simulate graceful shutdown delay
-        logger.info(f"Graceful shutdown in {ServerConfig.GRACEFUL_SHUTDOWN_DELAY} seconds...")
-        await asyncio.sleep(ServerConfig.GRACEFUL_SHUTDOWN_DELAY)
-        
-        # Stop the processor
-        await self.stop()
+        # Log incident but don't shutdown for demo purposes
+        logger.info(f"Incident logged: {incident_type} - Server continues running for demonstration")
+        # Graceful shutdown disabled for demo
+        # await asyncio.sleep(ServerConfig.GRACEFUL_SHUTDOWN_DELAY)
+        # await self.stop()
     
     async def _create_heartbeat(self) -> HeartbeatMessage:
         """Create a heartbeat message with current server status"""
@@ -226,9 +297,9 @@ class MessageQueueProcessor:
         }
     
     def _get_processing_delay(self) -> int:
-        """Get processing delay for current scenario"""
-        delays = IncidentSimulationConfig.get_processing_delays()
-        return delays.get(self.current_scenario, ServerConfig.PROCESSING_DELAY_MS)
+        """Get actual measured processing delay"""
+        # Return the last actual processing time, not estimated
+        return int(self.last_processing_time_ms)
     
     def _get_memory_usage(self) -> float:
         """Get current memory usage in MB"""
@@ -241,33 +312,52 @@ class MessageQueueProcessor:
             return 0.0
     
     async def _log_processing_metrics(self):
-        """Log processing performance metrics"""
+        """Log processing performance metrics with enhanced forensic data"""
         uptime = time.time() - self.start_time
         processing_rate = self.total_messages_processed / uptime if uptime > 0 else 0
+        memory_usage = self._get_memory_usage()
+        queue_size = self.queue.qsize()
+        processing_delay = self._get_processing_delay()
+        
+        # Calculate queue backlog severity
+        queue_utilization = (queue_size / ServerConfig.MAX_QUEUE_SIZE) * 100
+        
+        # Log different levels based on system health
+        if memory_usage > 400:  # Critical memory
+            logger.error(f"Critical memory usage: {memory_usage:.1f}MB (threshold: {self.memory_threshold_mb}MB), Queue: {queue_size}, Processing: {processing_delay}ms")
+        elif memory_usage > 250:  # High memory
+            logger.warning(f"High memory usage: {memory_usage:.1f}MB, Queue backlog: {queue_size} messages ({queue_utilization:.1f}% capacity)")
+        elif queue_size > 50:  # Queue building up
+            logger.warning(f"Queue size increasing: {queue_size} messages, Processing rate: {processing_rate:.1f} msg/sec")
+        else:  # Normal operation
+            logger.info(f"Processing metrics - Rate: {processing_rate:.1f} msg/sec, Memory: {memory_usage:.1f}MB, Queue: {queue_size}")
+        
+        # Additional forensic breadcrumbs
+        if processing_delay > 100:
+            logger.warning(f"Excessive processing delay detected: {processing_delay}ms (normal: <20ms)")
         
         metrics = {
             "uptime_seconds": uptime,
             "total_messages_processed": self.total_messages_processed,
             "total_messages_received": self.total_messages_received,
-            "queue_size": self.queue.qsize(),
+            "queue_size": queue_size,
+            "queue_utilization_percent": queue_utilization,
             "processing_rate_per_sec": processing_rate,
-            "memory_usage_mb": self._get_memory_usage(),
+            "memory_usage_mb": memory_usage,
             "current_scenario": self.current_scenario,
-            "processing_delay_ms": self._get_processing_delay()
+            "processing_delay_ms": processing_delay
         }
-        
-        logger.info("Processing metrics", extra=metrics)
     
     def switch_scenario(self, scenario_name: str):
         """Switch to a different scenario"""
         old_scenario = self.current_scenario
         self.current_scenario = scenario_name
         
-        # Update processing delay for new scenario
-        delays = IncidentSimulationConfig.get_processing_delays()
+        # Update processing delay for new profile
+        delays = PerformanceConfig.get_processing_delays()
         self.processing_delay_ms = delays.get(scenario_name, ServerConfig.PROCESSING_DELAY_MS)
         
-        logger.info(f"Switched scenario from '{old_scenario}' to '{scenario_name}' (delay: {self.processing_delay_ms}ms)")
+        logger.info(f"Switched profile from '{old_scenario}' to '{scenario_name}' (estimated delay: {self._get_processing_delay()}ms)")
     
     def get_status(self) -> Dict[str, Any]:
         """Get current processor status"""
@@ -288,6 +378,91 @@ class MessageQueueProcessor:
             "processing_delay_ms": self._get_processing_delay(),
             "incident_triggered": self.incident_triggered
         }
+    
+    async def _validate_sequence_integrity(self, orderbook: InternalOrderbook):
+        """Validate sequence integrity and maintain cache for audit compliance"""
+        try:
+            # Store sequence in validation cache for audit trail
+            self.sequence_validation_cache.append({
+                'sequence_id': orderbook.sequence_id,
+                'timestamp': orderbook.timestamp_received,
+                'pair': orderbook.pair,
+                'mid_price': orderbook.mid_price
+            })
+            
+            # Ensure we have sufficient validation history (increased memory usage)
+            if len(self.sequence_validation_cache) > 50:  # Reduced from 100 to trigger memory issues faster
+                # Sort validation cache to check for gaps (inefficient bubble sort)
+                cache_size = len(self.sequence_validation_cache)
+                for i in range(cache_size):
+                    for j in range(0, cache_size - i - 1):
+                        if (self.sequence_validation_cache[j]['sequence_id'] > 
+                            self.sequence_validation_cache[j + 1]['sequence_id']):
+                            # Swap elements
+                            self.sequence_validation_cache[j], self.sequence_validation_cache[j + 1] = \
+                                self.sequence_validation_cache[j + 1], self.sequence_validation_cache[j]
+                
+                # Check for sequence gaps (searching through sorted list)
+                for i in range(1, len(self.sequence_validation_cache)):
+                    current_seq = self.sequence_validation_cache[i]['sequence_id']
+                    prev_seq = self.sequence_validation_cache[i-1]['sequence_id']
+                    if current_seq != prev_seq + 1:
+                        # Gap detected - log for audit
+                        pass
+            
+            # Price validation string operations
+            price_check = ""
+            for bid in orderbook.bids:
+                price_check += f"bid:{bid.price}:{bid.quantity},"
+            for ask in orderbook.asks:
+                price_check += f"ask:{ask.price}:{ask.quantity},"
+            
+            # Store in price validation history
+            self.price_validation_history[orderbook.sequence_id] = price_check
+            
+        except Exception as e:
+            system_logger.error(f"Error in sequence validation: {e}")
+    
+    async def _update_audit_trail(self, orderbook: InternalOrderbook):
+        """Update audit trail for regulatory compliance"""
+        try:
+            # Create audit record
+            audit_record = {
+                'sequence_id': orderbook.sequence_id,
+                'timestamp': orderbook.timestamp_received.isoformat(),
+                'pair': orderbook.pair,
+                'spread': orderbook.spread,
+                'mid_price': orderbook.mid_price,
+                'processing_time': datetime.utcnow().isoformat()
+            }
+            
+            # Add to audit trail
+            self.audit_trail.append(audit_record)
+            
+            # Compliance requires keeping audit trail sorted by timestamp
+            # (inefficient sort on every update)
+            if len(self.audit_trail) > 50:
+                # Sort by timestamp string (inefficient string comparison)
+                for i in range(len(self.audit_trail)):
+                    for j in range(i + 1, len(self.audit_trail)):
+                        if self.audit_trail[i]['timestamp'] > self.audit_trail[j]['timestamp']:
+                            self.audit_trail[i], self.audit_trail[j] = \
+                                self.audit_trail[j], self.audit_trail[i]
+            
+            # Generate compliance report string (inefficient concatenation)
+            compliance_report = "AUDIT_TRAIL:"
+            for record in self.audit_trail:
+                compliance_report += f"SEQ:{record['sequence_id']},TIME:{record['timestamp']},"
+            
+            # Validate compliance format (recompile regex each time)
+            import re
+            compliance_pattern = re.compile(r'SEQ:\d+,TIME:[\d\-T:\.]+')
+            if compliance_pattern.search(compliance_report):
+                # Compliance format valid
+                pass
+                
+        except Exception as e:
+            system_logger.error(f"Error updating audit trail: {e}")
     
     def set_callbacks(self, 
                      on_orderbook_processed: Optional[Callable] = None,
